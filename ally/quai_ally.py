@@ -155,7 +155,7 @@ def env_proton(pfx):
 def chemin_windows(p):
     return "Z:" + str(p).replace("/", "\\")
 
-def lancer_proton(pfx, args, msg, timeout=3600):
+def lancer_proton(pfx, args, msg, timeout=10800):
     etape(msg)
     pfx.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(["umu-run", *args], env=env_proton(pfx),
