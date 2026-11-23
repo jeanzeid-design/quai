@@ -146,7 +146,7 @@ def proton():
 
 def env_proton(pfx):
     e = dict(os.environ)
-    e.update(WINEPREFIX=str(pfx), GAMEID="umu-0", PROTONPATH=str(proton()),
+    e.update(WINEPREFIX=str(pfx), GAMEID="umu-none", PROTONPATH=str(proton()),
              UMU_RUNTIME_UPDATE="0", DISPLAY=e.get("DISPLAY", ":0"),
              XDG_RUNTIME_DIR=e.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
              WINEDEBUG="-all")
@@ -354,7 +354,18 @@ def candidats_exe(*dossiers):
                 continue
             prof = len(p.relative_to(d).parts)
             score = t / 1e6 - prof * 3 + (25 if re.search(r"(shipping|win64|game)", p.name, re.I) else 0)
-            cands.append({"chemin": str(p), "nom": p.name, "taille": t, "score": round(score, 1)})
+            cands.append({"chemin": str(p), "nom": p.name, "taille": t, "score": round(score, 1),
+                          "_racine": str(d), "_prof": prof})
+    # Jeux Unreal : le vrai binaire (…-Win64-Shipping.exe, dans <Projet>/Binaries/Win64/) est lourd, mais c'est
+    # le petit lanceur posé à la racine qui doit démarrer le jeu (il passe les bons arguments).
+    # S'il existe, il passe devant, nettement, pour que Quai le choisisse sans poser la question.
+    for ship in [c for c in cands if re.search(r"-win64-shipping\.exe$", c["nom"], re.I)]:
+        for c in cands:
+            if c is not ship and c.get("_racine") == ship["_racine"] and c.get("_prof") == 1 \
+                    and c["nom"].lower().endswith(".exe"):
+                c["score"] = max(c["score"], ship["score"] + 50)
+    for c in cands:
+        c.pop("_racine", None); c.pop("_prof", None)
     return sorted(cands, key=lambda c: -c["score"])
 
 def installer(args):
@@ -504,7 +515,7 @@ def script_proton(pfx, exe, args=""):
     return f"""#!/bin/bash
 # Écrit par Quai. Lance {exe.name} avec Proton (umu), préfixe propre au jeu.
 export WINEPREFIX="{pfx}"
-export GAMEID=umu-0
+export GAMEID=umu-none
 export PROTONPATH="{p}"
 export UMU_RUNTIME_UPDATE=0
 cd "{exe.parent}"
