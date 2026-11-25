@@ -497,6 +497,7 @@ def installer(args):
     meta = {"id": id_, "nom": nom, "type": t, "dest": dest, "source": f.name,
             "cree": time.strftime("%Y-%m-%d %H:%M"), "etat": "installation"}
     ecrire_fiche(d, meta)
+    poser_verrou(d)
     etape(f"Rangement dans {d}")
     mode = args.get("mode")  # pour un .exe inconnu : "installeur" ou "jeu"
 
@@ -574,9 +575,13 @@ def installer(args):
             meta["type"] = "portable"; ecrire_fiche(d, meta)
             return finaliser({"id": id_, "exe": str(cible), "_d": d})
 
-    meta["installeur"] = str(installeur); ecrire_fiche(d, meta)
+    meta.update(installeur=str(installeur), installeur_type=t); ecrire_fiche(d, meta)
+    return lancer_installeur(d, meta, installeur, t, args.get("interactif"))
+
+def lancer_installeur(d, meta, installeur, t, a_clics=False):
+    jeu, pfx = d / "jeu", d / "pfx"
     win = chemin_windows(jeu)
-    if args.get("interactif"):
+    if a_clics:
         return interactif(d, meta)
     if t == "inno":
         code = lancer_proton(pfx, [str(installeur), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
@@ -594,6 +599,65 @@ def installer(args):
         meta["etat"] = "refus HV"; ecrire_fiche(d, meta)
         erreur(HV_REFUS + " Clique sur « Désinstaller » pour récupérer la place.")
     return choisir_ou_finaliser(d, meta, [jeu, pfx / "drive_c"])
+
+# ── installation en cours / relance (25/11/2026) ─────────────────────────────
+# La liste affiche « inachevée » tant que quai.json n'est pas « pret » : c'est
+# aussi le cas PENDANT une installation. Avant de proposer « Relancer », il
+# faut donc savoir si un moteur travaille encore sur ce jeu : verrou en_cours.pid
+# (PID du moteur), plus tout processus Wine resté dans le préfixe du jeu.
+def poser_verrou(d):
+    (d / "en_cours.pid").write_text(str(os.getpid()))
+
+def _vivant(pid):
+    try:
+        return b"quai_ally.py" in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return False
+
+def processus_du_prefixe(pfx):
+    cible, pids = f"WINEPREFIX={pfx}".encode(), []
+    for e in os.listdir("/proc"):
+        if e.isdigit():
+            try:
+                if cible in Path(f"/proc/{e}/environ").read_bytes().split(b"\0"):
+                    pids.append(int(e))
+            except OSError:
+                pass
+    return pids
+
+def en_cours(d):
+    try:
+        pid = int((d / "en_cours.pid").read_text())
+        if pid != os.getpid() and _vivant(pid):
+            return True
+    except (OSError, ValueError):
+        pass
+    return bool(processus_du_prefixe(d / "pfx"))
+
+def relancable(d, m):
+    """Installeur automatique encore présent. Le type vient de la fiche : relire
+    l'installeur (jusqu'à 64 Mo) pour chaque jeu ralentirait toute la liste."""
+    i = m.get("installeur")
+    return (m.get("etat") == "installation" and bool(i) and Path(i).exists()
+            and m.get("installeur_type") in ("inno", "nsis", "msi"))
+
+def relancer(args):
+    """Nettoie les restes d'une installation inachevée et relance l'installeur déjà sur l'Ally."""
+    d = trouver_jeu(args["id"]); meta = fiche(d)
+    if not relancable(d, meta):
+        erreur("Ce jeu ne peut pas être relancé : l'installeur n'est plus là ou l'installation n'était pas automatique. "
+               "Désinstalle-le et redépose le fichier.")
+    if en_cours(d):
+        erreur("Une installation tourne encore pour ce jeu. Attends qu'elle se termine ou qu'elle échoue.")
+    poser_verrou(d)
+    empecher_veille(gardien_moteur(), "Installation d'un jeu")
+    etape("Nettoyage des restes de l'installation précédente…")
+    for pid in processus_du_prefixe(d / "pfx"):
+        _fermer(pid)
+    for reste in ("jeu", "pfx"):
+        shutil.rmtree(d / reste, ignore_errors=True)
+    meta.pop("candidats", None); meta["etat"] = "installation"; ecrire_fiche(d, meta)
+    return lancer_installeur(d, meta, Path(meta["installeur"]), meta["installeur_type"])
 
 def interactif(d, meta):
     """Installeur à clics : tuile temporaire « Installer — Nom » dans Steam, Jean la lance sur l'Ally."""
@@ -878,12 +942,15 @@ def liste():
                 continue
             jeux.append({"id": m["id"], "nom": m["nom"], "type": m.get("type"), "dest": dest,
                          "etat": m.get("etat"), "taille": m.get("taille") or taille_dossier(q.parent),
-                         "cree": m.get("cree")})
+                         "cree": m.get("cree"), "en_cours": en_cours(q.parent),
+                         "relancable": relancable(q.parent, m)})
     emit("fin", jeux=jeux)
 
 def desinstaller(args):
     d = trouver_jeu(args["id"])
     meta = fiche(d)
+    if en_cours(d):
+        erreur("Une installation tourne encore pour ce jeu : attends qu'elle se termine avant de le désinstaller.")
     SAUV.mkdir(parents=True, exist_ok=True)
     users = d / "pfx/drive_c/users/steamuser"
     garder = [p for p in (users / "AppData", users / "Documents", users / "Saved Games") if p.exists()]
@@ -943,6 +1010,7 @@ def main():
             emit("fin", msg="Fichier envoyé effacé.")
         elif cmd == "liste": liste()
         elif cmd == "desinstaller": desinstaller(args)
+        elif cmd == "relancer": relancer(args)
         elif cmd == "cle":
             CONF.mkdir(parents=True, exist_ok=True)
             (CONF / "sgdb.key").write_text(args["cle"].strip()); (CONF / "sgdb.key").chmod(0o600)

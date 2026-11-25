@@ -137,6 +137,7 @@ enum Ally {
 
 struct Jeu: Identifiable, Hashable {
     let id: String, nom: String, type: String, dest: String, etat: String, taille: Int64, cree: String
+    var enCours = false, relancable = false
 }
 
 struct Candidat: Identifiable, Hashable {
@@ -198,7 +199,9 @@ final class Quai: ObservableObject {
             jeux = arr.map { Jeu(id: $0["id"] as? String ?? "", nom: $0["nom"] as? String ?? "",
                                  type: $0["type"] as? String ?? "", dest: $0["dest"] as? String ?? "",
                                  etat: $0["etat"] as? String ?? "", taille: int($0["taille"]),
-                                 cree: $0["cree"] as? String ?? "") }
+                                 cree: $0["cree"] as? String ?? "",
+                                 enCours: $0["en_cours"] as? Bool ?? false,
+                                 relancable: $0["relancable"] as? Bool ?? false) }
         }
     }
 
@@ -349,6 +352,13 @@ final class Quai: ObservableObject {
     func desinstaller(_ j: Jeu) async {
         journal = []
         await suivre("desinstaller", ["id": j.id])
+    }
+
+    // Installation inachevée : le moteur nettoie jeu/ et pfx/ et relance
+    // l'installeur resté sur l'Ally, sans renvoyer le fichier (25/11/2026).
+    func relancer(_ j: Jeu) async {
+        journal = []
+        await suivre("relancer", ["id": j.id])
     }
 
     func enregistrerCle(_ cle: String) async {
@@ -545,11 +555,17 @@ struct Fenetre: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(j.nom).fontWeight(.medium)
                         Text([j.dest == "sd" ? "microSD" : "interne", Quai.go(j.taille), j.cree,
-                              j.etat == "pret" ? nil : "installation inachevée"].compactMap { $0 }.joined(separator: " · "))
+                              j.etat == "pret" ? nil : (j.enCours ? "installation en cours sur l'Ally" : "installation inachevée")]
+                                .compactMap { $0 }.joined(separator: " · "))
                             .font(.caption).foregroundStyle(j.etat == "pret" ? Color.secondary : Color.orange)
                     }
                     Spacer()
-                    Button("Désinstaller") { aDesinstaller = j }.disabled(!quai.etapeLibre)
+                    if j.relancable && !j.enCours {
+                        Button("Relancer") { Task { await quai.relancer(j) } }
+                            .disabled(!quai.etapeLibre)
+                            .help("Efface les restes de l'installation et relance l'installeur déjà sur l'Ally, sans renvoyer le fichier.")
+                    }
+                    Button("Désinstaller") { aDesinstaller = j }.disabled(!quai.etapeLibre || j.enCours)
                 }
                 .padding(.vertical, 6)
                 Divider()
