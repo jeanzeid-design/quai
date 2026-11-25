@@ -44,7 +44,13 @@ fi
 echo "→ installation"
 DEST="/Applications/Outils maison"
 mkdir -p "$DEST"
-pkill -x Quai 2>/dev/null || true
+# Ne jamais fermer un Quai ouvert : il peut suivre une installation de plus
+# d'une heure sur l'Ally (fermé ainsi en plein travail le 25/11/2026).
+# On attend que Jean le quitte lui-même, puis on installe.
+if pgrep -x Quai >/dev/null; then
+    echo "   Quai est ouvert : la nouvelle version s'installera quand tu l'auras quitté."
+    while pgrep -x Quai >/dev/null; do sleep 5; done
+fi
 rm -rf "$DEST/Quai.app"
 cp -R "$APP" "$DEST/Quai.app"
 touch "$DEST/Quai.app"
