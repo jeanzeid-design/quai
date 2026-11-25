@@ -415,12 +415,34 @@ def candidats_exe(*dossiers):
         c.pop("_racine", None); c.pop("_prof", None)
     return sorted(cands, key=lambda c: -c["score"])
 
+# Repacks « HV » (hyperviseur) : la protection n'est pas retirée mais contournée par un pilote noyau
+# Windows (VBS.cmd, Test Signing). Impossible sous Proton : le jeu ne démarrera jamais (vu le 24/11/2026,
+# FitGirl HV Repack). On les reconnaît au nom du repack et à leurs fichiers, jamais au nom du jeu.
+HV_NOM = re.compile(r"(^|[\s\[\(_.\-])(hv|hypervisor)([\s\]\)_.\-]|$)", re.I)
+HV_FICHIERS = {"vbs.cmd", "hvg.bat", "hv source.7z"}
+HV_REFUS = ("Repack « HV » (hyperviseur) : sa protection passe par un pilote Windows qui exige de "
+            "désactiver les sécurités du système. Impossible sous Linux et Proton, le jeu ne démarrerait pas.")
+
+def est_hv(nom, dossier=None, profondeur=2):
+    if nom and HV_NOM.search(nom):
+        return True
+    if dossier and Path(dossier).is_dir():
+        base = len(Path(dossier).parts)
+        for racine_, sous, fichiers in os.walk(dossier):
+            if len(Path(racine_).parts) - base >= profondeur:
+                sous[:] = []
+            if any(x.lower() in HV_FICHIERS or "hypervisor" in x.lower() for x in fichiers):
+                return True
+    return False
+
 def installer(args):
     f = Path(args["fichier"])
     info = analyser(f)
     t = info["type"]
     if t == "refus":
         erreur(info["note"])
+    if est_hv(args.get("nom") or f.name, f if f.is_dir() else None):
+        erreur(HV_REFUS)
     nom = args.get("nom") or info["nom"]
     dest = args.get("dest", "interne")
     r = racine(dest)
@@ -529,6 +551,9 @@ def installer(args):
         return interactif(d, meta)
     if code not in (0, None):
         etape(f"L'installeur s'est terminé avec le code {code} : je vérifie ce qu'il a laissé.")
+    if est_hv(None, jeu):
+        meta["etat"] = "refus HV"; ecrire_fiche(d, meta)
+        erreur(HV_REFUS + " Clique sur « Désinstaller » pour récupérer la place.")
     return choisir_ou_finaliser(d, meta, [jeu, pfx / "drive_c"])
 
 def interactif(d, meta):
