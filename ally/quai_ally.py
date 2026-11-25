@@ -204,6 +204,9 @@ def lancer_proton(pfx, args, msg, timeout=10800):
         actifs = _sous_installeurs(pfx)
         for pid, (nom, cpu) in actifs.items():
             avant = vus.get(pid)
+            if avant is None:
+                etape(f"{nom} lancé par l'installeur : je le surveille "
+                      f"(fermé s'il reste {INACTIF_MAX} s sans rien faire).")
             if avant is None or avant[0] != cpu:
                 vus[pid] = (cpu, maintenant)
             elif maintenant - avant[1] >= INACTIF_MAX:
@@ -435,7 +438,43 @@ def est_hv(nom, dossier=None, profondeur=2):
                 return True
     return False
 
+def empecher_veille(gardien, pourquoi):
+    """Pas de veille pendant un envoi ou une installation (demande de Jean, 25/11/2026).
+
+    systemd-inhibit et non « systemctl mask » : pas de droits administrateur, et
+    l'interdiction tombe d'elle-même dès que le petit script « gardien » se termine.
+    Chaque gardien a une fin garantie : un plantage ne laisse jamais l'Ally
+    privée de veille.
+    """
+    # Par SSH, polkit refuse « sleep » sans mot de passe administrateur (session
+    # non active, vérifié le 25/11/2026) mais accepte « idle ». On tente le
+    # blocage complet, puis on se rabat sur l'inactivité. Une règle polkit
+    # (/etc/polkit-1/rules.d/50-quai.rules, posée une fois avec sudo) rendrait
+    # le premier essai valable.
+    for quoi in ("sleep:idle", "idle"):
+        try:
+            p = subprocess.Popen(["systemd-inhibit", f"--what={quoi}", "--who=Quai",
+                                  f"--why={pourquoi}", "--mode=block", "sh", "-c", gardien],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            return  # sans systemd-inhibit, on continue quand même
+        time.sleep(0.5)
+        if p.poll() is None:
+            return
+
+# Tant que CE moteur vit.
+def gardien_moteur():
+    return f"while kill -0 {os.getpid()} 2>/dev/null; do sleep 5; done"
+
+# Le temps de l'envoi depuis le Mac : on attend que rsync arrive (2 min au plus),
+# puis on tient tant qu'il tourne. « [r]sync » pour ne pas se reconnaître soi-même.
+GARDIEN_ENVOI = ('t=0; while [ $t -lt 120 ] && ! pgrep -u "$(id -u)" -f "[r]sync --server" >/dev/null; '
+                 'do sleep 2; t=$((t+2)); done; '
+                 'while pgrep -u "$(id -u)" -f "[r]sync --server" >/dev/null; do sleep 5; done')
+
 def installer(args):
+    empecher_veille(gardien_moteur(), "Installation d'un jeu")
     f = Path(args["fichier"])
     info = analyser(f)
     t = info["type"]
@@ -878,6 +917,7 @@ def etat():
 def depot(dest):
     p = racine(dest) / "Jeux/.depot"
     p.mkdir(parents=True, exist_ok=True)
+    empecher_veille(GARDIEN_ENVOI, "Réception d'un jeu depuis le Mac")
     emit("fin", chemin=str(p))
 
 
