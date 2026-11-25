@@ -304,7 +304,34 @@ final class Quai: ObservableObject {
         if typeDetecte == "exe" {
             if modeExe == "jeu" { args["mode"] = "jeu" } else { args["interactif"] = true }
         } else if forcerClics { args["interactif"] = true }
+        // Installeur Windows automatique : le moteur passe l'Ally en mode Bureau (25/11/2026).
+        if args["interactif"] == nil && args["mode"] == nil
+            && ["inno", "nsis", "msi", "archive", "iso", "dossier"].contains(typeDetecte) {
+            guard let b = await autoriserBureau() else { return }
+            args["bureau"] = b
+        }
         await suivre("installer", args)
+    }
+
+    /// Passer en mode Bureau ferme Steam, et donc un jeu lancé : jamais sans l'accord de Jean.
+    /// Rend "oui" (aucun jeu ne tourne), "forcer" (Jean accepte de fermer le jeu),
+    /// "non" (rester en mode jeu), ou nil (annuler).
+    func autoriserBureau() async -> String? {
+        guard let e = await Ally.appel("etat"), e["t"] as? String == "fin" else { return "oui" }
+        guard e["session"] as? String == "jeu", let jeu = e["jeu_lance"] as? String else { return "oui" }
+        let a = NSAlert()
+        a.messageText = "« \(jeu) » tourne sur l'Ally"
+        a.informativeText = "Pour que les fenêtres de l'installeur soient visibles, Quai passe l'Ally en mode Bureau, "
+            + "puis la remet en mode jeu à la fin. Ce passage ferme Steam, donc aussi « \(jeu) » : "
+            + "sauvegarde ta partie avant."
+        a.addButton(withTitle: "Fermer le jeu et passer en mode Bureau")
+        a.addButton(withTitle: "Installer en restant en mode jeu")
+        a.addButton(withTitle: "Annuler")
+        switch a.runModal() {
+        case .alertFirstButtonReturn: return "forcer"
+        case .alertSecondButtonReturn: return "non"
+        default: return nil
+        }
     }
 
     func choisir(_ id: String, _ c: Candidat) async { await suivre("finaliser", ["id": id, "exe": c.chemin]) }
@@ -358,7 +385,8 @@ final class Quai: ObservableObject {
     // l'installeur resté sur l'Ally, sans renvoyer le fichier (25/11/2026).
     func relancer(_ j: Jeu) async {
         journal = []
-        await suivre("relancer", ["id": j.id])
+        guard let b = await autoriserBureau() else { return }
+        await suivre("relancer", ["id": j.id, "bureau": b])
     }
 
     func enregistrerCle(_ cle: String) async {

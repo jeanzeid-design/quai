@@ -25,7 +25,7 @@ Règles :
 import binascii, json, os, re, shutil, struct, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-VERSION = "3"
+VERSION = "4"
 HOME = Path.home()
 STEAM = HOME / ".local/share/Steam"
 CONF = HOME / ".config/quai"
@@ -581,13 +581,94 @@ def installer(args):
             return finaliser({"id": id_, "exe": str(cible), "_d": d})
 
     meta.update(installeur=str(installeur), installeur_type=t); ecrire_fiche(d, meta)
-    return lancer_installeur(d, meta, installeur, t, args.get("interactif"))
+    return lancer_installeur(d, meta, installeur, t, args.get("interactif"), args.get("bureau"))
 
-def lancer_installeur(d, meta, installeur, t, a_clics=False):
+# ── mode Bureau pendant l'installation (25/11/2026, demande de Jean) ─────────
+# En mode jeu, gamescope n'affiche que l'appli au premier plan : la fenêtre d'un
+# installeur (ou d'un sous-installeur) qui attend une réponse reste invisible, et
+# l'installation semble figée (Dawnwalker, 25/11 : une heure à attendre un clic).
+# En mode Bureau, les fenêtres se voient, et on peut faire une capture d'écran
+# depuis le Mac. Quai bascule donc en mode Bureau avant un installeur Windows
+# automatique, et revient en mode jeu une fois le jeu ajouté à Steam.
+# La bascule ferme Steam, donc aussi un jeu lancé : jamais sans l'accord de Jean.
+# Le Mac le demande avant (« jeu_lance » dans etat) et passe bureau="forcer".
+# switch-to-desktop-mode ne change pas le mode par défaut : au redémarrage,
+# l'Ally revient en mode jeu quoi qu'il arrive.
+def env_session():
+    env = dict(os.environ)
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{os.getuid()}/bus"
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return env
+
+def jeu_lance():
+    """Nom du jeu en cours (lancé par Steam, Steam ou hors Steam), sinon None."""
+    p = subprocess.run(["pgrep", "-af", "SteamLaunch AppId="], capture_output=True, text=True).stdout
+    for ligne in p.splitlines():
+        m = re.search(r"AppId=(\d+)", ligne)
+        if not m or "pgrep" in ligne:
+            continue
+        appid = int(m.group(1))
+        for r in filter(None, (HOME, carte_sd())):
+            for q in (Path(r) / "Jeux").glob("*/quai.json"):
+                try:
+                    if json.loads(q.read_text()).get("appid") == appid:
+                        return json.loads(q.read_text()).get("nom")
+                except (OSError, ValueError):
+                    pass
+        exe = re.findall(r"([^/\\\\]+\.exe)", ligne, re.I)
+        return exe[-1] if exe else f"le jeu Steam {appid}"
+    return None
+
+def passer_bureau(d, meta, bureau):
+    if bureau == "non" or not session_jeu():
+        return
+    nom = jeu_lance()
+    if nom and bureau != "forcer":
+        etape(f"« {nom} » tourne sur l'Ally : je reste en mode jeu, rien n'est fermé.")
+        return
+    etape("Passage de l'Ally en mode Bureau, pour que les fenêtres de l'installeur soient visibles…")
+    r = subprocess.run(["steamosctl", "switch-to-desktop-mode", "plasma.desktop"], env=env_session(),
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        etape("La bascule en mode Bureau a échoué : l'installation continue en mode jeu.")
+        return
+    for _ in range(90):
+        time.sleep(1)
+        if subprocess.run(["pgrep", "-x", "plasmashell"], capture_output=True).returncode == 0:
+            time.sleep(5)   # laisser le bureau finir de s'ouvrir
+            meta["bureau_par_quai"] = True; ecrire_fiche(d, meta)
+            etape("L'Ally est en mode Bureau.")
+            return
+    etape("Le mode Bureau tarde à s'ouvrir : l'installation continue quand même.")
+
+def revenir_jeu(d, meta):
+    """Après l'ajout à Steam : retour au mode jeu si c'est Quai qui en était sorti."""
+    if not meta.pop("bureau_par_quai", False):
+        return False
+    ecrire_fiche(d, meta)
+    if session_jeu():
+        return False
+    etape("Retour de l'Ally en mode jeu…")
+    # Le Steam du Bureau, relancé après l'écriture des raccourcis, se ferme proprement
+    # d'abord : il réécrit shortcuts.vdf en quittant, mieux vaut qu'il ait fini.
+    if subprocess.run(["pgrep", "-x", "steam"], capture_output=True).returncode == 0:
+        time.sleep(15)   # le temps qu'il ait relu la bibliothèque
+        subprocess.Popen(["steam", "-shutdown"], env=env_session(),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(60):
+            time.sleep(1)
+            if subprocess.run(["pgrep", "-x", "steam"], capture_output=True).returncode != 0:
+                break
+    subprocess.run(["steamosctl", "switch-to-game-mode"], env=env_session(), capture_output=True)
+    return True
+
+def lancer_installeur(d, meta, installeur, t, a_clics=False, bureau=None):
     jeu, pfx = d / "jeu", d / "pfx"
     win = chemin_windows(jeu)
     if a_clics:
         return interactif(d, meta)
+    if t in ("inno", "nsis", "msi"):
+        passer_bureau(d, meta, bureau)
     if t == "inno":
         code = lancer_proton(pfx, [str(installeur), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                                    "/SP-", "/NOICONS", f"/DIR={win}"], "Installation automatique (Inno Setup)…")
@@ -662,7 +743,7 @@ def relancer(args):
     for reste in ("jeu", "pfx"):
         shutil.rmtree(d / reste, ignore_errors=True)
     meta.pop("candidats", None); meta["etat"] = "installation"; ecrire_fiche(d, meta)
-    return lancer_installeur(d, meta, Path(meta["installeur"]), meta["installeur_type"])
+    return lancer_installeur(d, meta, Path(meta["installeur"]), meta["installeur_type"], bureau=args.get("bureau"))
 
 def interactif(d, meta):
     """Installeur à clics : tuile temporaire « Installer — Nom » dans Steam, Jean la lance sur l'Ally."""
@@ -744,6 +825,7 @@ def finaliser(args):
     meta.pop("installeur", None)
     meta["taille"] = taille_dossier(d) + (Path(exe).stat().st_size if meta.get("type") == "rom" else 0)
     ecrire_fiche(d, meta)
+    revenir_jeu(d, meta)
     emit("fin", id=meta["id"], nom=meta["nom"], taille=meta["taille"], dest=meta["dest"],
          msg=f"« {meta['nom']} » est installé et ajouté à Steam.")
 
@@ -983,7 +1065,7 @@ def etat():
     emit("fin",
          interne=place(HOME), sd=({"chemin": str(sd), **place(sd)} if sd else None),
          steam=subprocess.run(["pgrep", "-x", "steam"], capture_output=True).returncode == 0,
-         session="jeu" if session_jeu() else "bureau",
+         session="jeu" if session_jeu() else "bureau", jeu_lance=jeu_lance(),
          proton=proton().name, sgdb=(CONF / "sgdb.key").exists())
 
 def depot(dest):
