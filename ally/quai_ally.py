@@ -155,19 +155,66 @@ def env_proton(pfx):
 def chemin_windows(p):
     return "Z:" + str(p).replace("/", "\\")
 
+# Sous-installeurs que les repacks (FitGirl surtout) lancent après la décompression : contrôle MD5,
+# DirectX, Visual C++. En mode jeu, leur fenêtre est invisible et ils attendent un clic pour toujours
+# (cas vécu le 24/11/2026). Proton fournit déjà DirectX et Visual C++ : on les ferme dès qu'ils
+# ne travaillent plus (processeur immobile depuis INACTIF_MAX secondes), jamais pendant qu'ils calculent.
+BLOQUEURS = re.compile(r"^(quicksfv|dxwebsetup|dxwsetup|dxsetup|vc_?redist[\w.\-]*|vcredist[\w.\-]*)\.exe$")
+INACTIF_MAX = 30
+
+def _sous_installeurs(pfx):
+    """{pid: (nom, temps processeur)} des bloqueurs connus qui tournent dans CE préfixe Wine."""
+    trouves, cible = {}, f"WINEPREFIX={pfx}".encode()
+    for e in os.listdir("/proc"):
+        if not e.isdigit():
+            continue
+        try:
+            argv0 = Path(f"/proc/{e}/cmdline").read_bytes().split(b"\0")[0].decode(errors="replace")
+            nom = re.split(r"[\\/]", argv0)[-1].lower()
+            if not BLOQUEURS.match(nom):
+                continue
+            if cible not in Path(f"/proc/{e}/environ").read_bytes().split(b"\0"):
+                continue
+            champs = Path(f"/proc/{e}/stat").read_text().rsplit(")", 1)[1].split()
+            trouves[int(e)] = (nom, int(champs[11]) + int(champs[12]))
+        except (OSError, IndexError, ValueError):
+            continue
+    return trouves
+
+def _fermer(pid):
+    for sig in (15, 9):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        time.sleep(1)
+
 def lancer_proton(pfx, args, msg, timeout=10800):
     etape(msg)
     pfx.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(["umu-run", *args], env=env_proton(pfx),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     debut = time.time()
+    vus = {}   # pid -> (temps processeur, depuis quand il n'a pas bougé)
     while proc.poll() is None:
         time.sleep(5)
         ecoule = int(time.time() - debut)
         emit("progres", pct=None, msg=f"{msg} ({ecoule // 60} min {ecoule % 60:02d} s)")
+        maintenant = time.time()
+        actifs = _sous_installeurs(pfx)
+        for pid, (nom, cpu) in actifs.items():
+            avant = vus.get(pid)
+            if avant is None or avant[0] != cpu:
+                vus[pid] = (cpu, maintenant)
+            elif maintenant - avant[1] >= INACTIF_MAX:
+                etape(f"{nom} attend un clic invisible en mode jeu : fermé, Proton s'en passe.")
+                _fermer(pid)
+                vus.pop(pid, None)
+        for pid in set(vus) - set(actifs):
+            vus.pop(pid)
         if ecoule > timeout:
             proc.kill()
-            erreur("L'installation a dépassé une heure : arrêtée. L'installeur attendait peut-être un clic.")
+            erreur(f"L'installation a dépassé {timeout // 3600} h : arrêtée. L'installeur attendait peut-être un clic.")
     return proc.returncode
 
 
