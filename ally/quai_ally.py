@@ -161,6 +161,11 @@ def chemin_windows(p):
 # ne travaillent plus (processeur immobile depuis INACTIF_MAX secondes), jamais pendant qu'ils calculent.
 BLOQUEURS = re.compile(r"^(quicksfv|dxwebsetup|dxwsetup|dxsetup|vc_?redist[\w.\-]*|vcredist[\w.\-]*)\.exe$")
 INACTIF_MAX = 30
+# « Immobile » ne veut pas dire zéro : une fenêtre qui attend un clic consomme
+# encore ~0,3 % (vu le 25/11/2026 sur QuickSFV, Trails : 3 tops en 10 s), ce qui
+# remettait le compteur à zéro indéfiniment. Seuil : moins de 5 % d'un cœur sur
+# la fenêtre d'observation. Un contrôle MD5 qui calcule tourne près de 100 %.
+SEUIL_ACTIF = 0.05 * os.sysconf("SC_CLK_TCK")   # tops processeur par seconde
 
 def _sous_installeurs(pfx):
     """{pid: (nom, temps processeur)} des bloqueurs connus qui tournent dans CE préfixe Wine."""
@@ -207,7 +212,7 @@ def lancer_proton(pfx, args, msg, timeout=10800):
             if avant is None:
                 etape(f"{nom} lancé par l'installeur : je le surveille "
                       f"(fermé s'il reste {INACTIF_MAX} s sans rien faire).")
-            if avant is None or avant[0] != cpu:
+            if avant is None or (cpu - avant[0]) > SEUIL_ACTIF * (maintenant - avant[1]):
                 vus[pid] = (cpu, maintenant)
             elif maintenant - avant[1] >= INACTIF_MAX:
                 etape(f"{nom} attend un clic invisible en mode jeu : fermé, Proton s'en passe.")
