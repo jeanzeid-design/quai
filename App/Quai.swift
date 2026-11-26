@@ -122,11 +122,34 @@ enum Ally {
                         progres: @escaping (Double) -> Void) async -> Bool {
         let sources = [url] + Quai.morceaux(url)
         let cibles = sources.map { q(dossier + "/" + $0.lastPathComponent) }.joined(separator: " ")
+        // Vraie avancée (26/11/2026) : « du » additionnait les fichiers temporaires de rsync
+        // (.nom.XXXXXX) et les restes d'un envoi interrompu, d'où un 100 % affiché trop tôt.
+        // Pour chaque fichier, on ne compte que la plus grande de ses versions présentes.
+        let mesure = "python3 -I -c " + q(#"""
+        import os,re,sys
+        best={}
+        cibles=[os.path.normpath(c) for c in sys.argv[1:]]
+        def compte(chemin):
+            if not any(chemin==c or chemin.startswith(c+"/") for c in cibles): return
+            try: t=os.path.getsize(chemin)
+            except OSError: return
+            d,n=os.path.split(chemin)
+            m=re.fullmatch(r"\.(.+)\.[A-Za-z0-9]{6}",n)
+            k=os.path.join(d,m.group(1)) if m else chemin
+            if any(k==c or k.startswith(c+"/") for c in cibles): best[k]=max(best.get(k,0),t)
+        for c in cibles:
+            parent=os.path.dirname(c)
+            for n in os.listdir(parent) if os.path.isdir(parent) else []:
+                compte(os.path.join(parent,n))
+            for r_,_,fs in os.walk(c):
+                for f in fs: compte(os.path.join(r_,f))
+        print(sum(best.values()))
+        """#) + " " + cibles
         let suivi = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 var t = ""
-                _ = await lancer(ssh, options + [hote, "du -scb \(cibles) 2>/dev/null | tail -1 | cut -f1"]) { t += $0 }
+                _ = await lancer(ssh, options + [hote, mesure]) { t += $0 }
                 if let v = Double(t.trimmingCharacters(in: .whitespaces)), taille > 0 {
                     let pct = min(v / Double(taille), 1)
                     await MainActor.run { progres(pct) }
@@ -276,6 +299,10 @@ final class Quai: ObservableObject {
 
     // 2. envoi vers le dépôt choisi, puis analyse
     func envoyer(_ url: URL, dest: String) async {
+        // Un seul envoi par dépôt (26/11/2026) : la question à l'Ally prend quelques secondes,
+        // les boutons restaient cliquables et trois clics avaient lancé trois envois.
+        guard case .destination = etape else { return }
+        etape = .envoi(url.lastPathComponent, 0)
         self.dest = dest
         journal = []
         let taille = Quai.taille(url)
