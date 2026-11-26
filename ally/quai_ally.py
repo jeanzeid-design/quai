@@ -25,7 +25,7 @@ Règles :
 import binascii, json, os, re, shutil, struct, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-VERSION = "4"
+VERSION = "5"
 HOME = Path.home()
 STEAM = HOME / ".local/share/Steam"
 CONF = HOME / ".config/quai"
@@ -144,8 +144,29 @@ def proton():
         return exp
     erreur("Aucun Proton trouvé sur l'Ally (ni GE-Proton, ni Proton Experimental).")
 
+def env_affichage(e):
+    """L'écran de la session en cours (26/11/2026). En mode Bureau, l'Xwayland de KWin
+    exige le jeton XAUTHORITY : sans lui, l'installeur ne pouvait pas ouvrir de
+    fenêtre et quittait en 15 s sans rien installer (STAR WARS Galactic Racer).
+    On reprend DISPLAY, WAYLAND_DISPLAY et XAUTHORITY de plasmashell s'il tourne."""
+    for nom in ("plasmashell", "kwin_wayland"):
+        try:
+            pid = subprocess.run(["pgrep", "-u", str(os.getuid()), "-x", nom], capture_output=True,
+                                 text=True).stdout.split()
+            if not pid:
+                continue
+            env = Path(f"/proc/{pid[0]}/environ").read_bytes().split(b"\0")
+            for ligne in env:
+                k, _, v = ligne.decode(errors="ignore").partition("=")
+                if k in ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY") and v:
+                    e[k] = v
+            return e
+        except OSError:
+            continue
+    return e
+
 def env_proton(pfx):
-    e = dict(os.environ)
+    e = env_affichage(dict(os.environ))
     e.update(WINEPREFIX=str(pfx), GAMEID="umu-none", PROTONPATH=str(proton()),
              UMU_RUNTIME_UPDATE="0", DISPLAY=e.get("DISPLAY", ":0"),
              XDG_RUNTIME_DIR=e.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
