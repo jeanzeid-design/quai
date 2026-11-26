@@ -25,7 +25,7 @@ Règles :
 import binascii, json, os, re, shutil, signal, struct, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-VERSION = "6"
+VERSION = "7"
 HOME = Path.home()
 STEAM = HOME / ".local/share/Steam"
 CONF = HOME / ".config/quai"
@@ -211,7 +211,10 @@ SEUIL_ACTIF = 0.05 * os.sysconf("SC_CLK_TCK")   # tops processeur par seconde
 
 def _sous_installeurs(pfx):
     """{pid: (nom, temps processeur)} des bloqueurs connus qui tournent dans CE préfixe Wine."""
-    trouves, cible = {}, f"WINEPREFIX={pfx}".encode()
+    # Proton réécrit WINEPREFIX en « <pfx>/pfx/ » (umu y pose un lien vers lui-même) :
+    # vu le 26/11/2026, la comparaison exacte ne trouvait jamais rien (STAR WARS bloqué 1 h
+    # sur QuickSFV). On compare donc les chemins résolus.
+    trouves, cible = {}, os.path.realpath(pfx)
     for e in os.listdir("/proc"):
         if not e.isdigit():
             continue
@@ -220,7 +223,9 @@ def _sous_installeurs(pfx):
             nom = re.split(r"[\\/]", argv0)[-1].lower()
             if not BLOQUEURS.match(nom):
                 continue
-            if cible not in Path(f"/proc/{e}/environ").read_bytes().split(b"\0"):
+            env = Path(f"/proc/{e}/environ").read_bytes().split(b"\0")
+            prefixes = [v[11:].decode(errors="replace") for v in env if v.startswith(b"WINEPREFIX=")]
+            if not any(os.path.realpath(v) == cible for v in prefixes):
                 continue
             champs = Path(f"/proc/{e}/stat").read_text().rsplit(")", 1)[1].split()
             trouves[int(e)] = (nom, int(champs[11]) + int(champs[12]))
@@ -239,7 +244,11 @@ def _fermer(pid):
 def lancer_proton(pfx, args, msg, timeout=10800):
     etape(msg)
     pfx.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.Popen(["umu-run", *args], env=env_proton(pfx),
+    env = env_proton(pfx)
+    # Les repacks ouvrent leur site à la fin (FitGirl : bit.ly, vu le 26/11/2026) :
+    # pendant une installation, Wine n'a pas le droit d'ouvrir le navigateur.
+    env["WINEDLLOVERRIDES"] = ";".join(filter(None, [env.get("WINEDLLOVERRIDES"), "winebrowser.exe=d"]))
+    proc = subprocess.Popen(["umu-run", *args], env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     debut = time.time()
     vus = {}   # pid -> (temps processeur, depuis quand il n'a pas bougé)
