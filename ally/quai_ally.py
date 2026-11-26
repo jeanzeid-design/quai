@@ -25,7 +25,7 @@ Règles :
 import binascii, json, os, re, shutil, signal, struct, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-VERSION = "8"
+VERSION = "9"
 HOME = Path.home()
 STEAM = HOME / ".local/share/Steam"
 CONF = HOME / ".config/quai"

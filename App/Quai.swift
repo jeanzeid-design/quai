@@ -61,7 +61,11 @@ enum Ally {
     static func commande(_ cmd: String, _ args: [String: Any] = [:],
                          evenement: @escaping ([String: Any]) -> Void) async -> Int32 {
         let json = (try? JSONSerialization.data(withJSONObject: args)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        let distant = "python3 -I \(moteurDistant) \(cmd) \(q(json))"
+        // Bazzite tue tous les processus d'une session SSH à sa fermeture (KillUserProcesses,
+        // vu le 26/11/2026) : une installation mourait si le Mac s'endormait, et le gardien
+        // anti-veille de l'envoi mourait dès la fin de « depot ». Dans un scope du gestionnaire
+        // utilisateur, le moteur et ses enfants vivent hors de la session.
+        let distant = "systemd-run --user --scope --quiet --collect python3 -I \(moteurDistant) \(cmd) \(q(json))"
         return await lancer(ssh, options + [hote, distant]) { ligne in
             guard let d = ligne.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
