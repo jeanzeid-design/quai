@@ -1070,6 +1070,33 @@ def sgdb(chemin, cle):
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())
 
+def nom_recherche(nom):
+    """« STAR WARS - Galactic Racer [FitGirl Repack] » → « STAR WARS Galactic Racer » :
+    SteamGridDB ne trouve rien quand on lui laisse l'étiquette du repack (26/11/2026)."""
+    n = re.sub(r"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}", " ", nom)
+    n = re.sub(r"(?i)\b(fitgirl|dodi|elamigos|gog|repack|monkey|multi\d*|v?\d+(\.\d+){1,})\b", " ", n)
+    n = re.sub(r"[-_:.]+", " ", n)
+    return re.sub(r"\s+", " ", n).strip() or nom
+
+def jaquettes_manquantes():
+    """Après l'enregistrement de la clé : images pour les jeux déjà prêts qui n'en ont pas."""
+    grid = dossier_utilisateur() / "config/grid"
+    faits = 0
+    for r in (HOME, carte_sd()):
+        if not r or not (r / "Jeux").exists():
+            continue
+        for q in sorted((r / "Jeux").glob("*/quai.json")):
+            try:
+                m = json.loads(q.read_text())
+            except Exception:
+                continue
+            if m.get("etat") != "pret" or not m.get("appid") or list(grid.glob(f"{m['appid']}*")):
+                continue
+            jaquettes(m, q.parent, m["appid"])
+            ecrire_fiche(q.parent, m)
+            faits += 1
+    return faits
+
 def jaquettes(meta, d, appid):
     cle_f = CONF / "sgdb.key"
     if not cle_f.exists():
@@ -1078,7 +1105,7 @@ def jaquettes(meta, d, appid):
     cle = cle_f.read_text().strip()
     etape("Recherche des jaquettes…")
     try:
-        res = sgdb("/search/autocomplete/" + urllib.parse.quote(meta["nom"]), cle).get("data") or []
+        res = sgdb("/search/autocomplete/" + urllib.parse.quote(nom_recherche(meta["nom"])), cle).get("data") or []
         if not res:
             etape("Aucune jaquette trouvée pour ce nom.")
             return
@@ -1192,7 +1219,10 @@ def main():
         elif cmd == "cle":
             CONF.mkdir(parents=True, exist_ok=True)
             (CONF / "sgdb.key").write_text(args["cle"].strip()); (CONF / "sgdb.key").chmod(0o600)
-            emit("fin", msg="Clé SteamGridDB enregistrée.")
+            n = jaquettes_manquantes()
+            emit("fin", msg="Clé SteamGridDB enregistrée." + (
+                f" Images ajoutées à {n} jeu(x) déjà installé(s) : elles apparaîtront au prochain "
+                "redémarrage de Steam." if n else ""))
         else:
             erreur(f"commande inconnue : {cmd}")
     except SystemExit:

@@ -451,9 +451,10 @@ final class Quai: ObservableObject {
         if etapeLibre, let j = jeux.first(where: { $0.enCours }) { await suivreJeu(j) }
     }
 
-    func enregistrerCle(_ cle: String) async {
-        _ = await Ally.appel("cle", ["cle": cle])
+    func enregistrerCle(_ cle: String) async -> String {
+        let r = await Ally.appel("cle", ["cle": cle])
         await rafraichir()
+        return (r?["msg"] as? String) ?? "L'Ally n'a pas répondu : clé non enregistrée."
     }
 
     static func go(_ o: Int64) -> String {
@@ -727,6 +728,8 @@ struct Reglages: View {
     @ObservedObject var quai: Quai
     @Environment(\.dismiss) var fermer
     @State var cle = ""
+    @State var travail = false
+    @State var resultat: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Jaquettes SteamGridDB").font(.headline)
@@ -737,11 +740,21 @@ struct Reglages: View {
                 .font(.caption).fixedSize(horizontal: false, vertical: true)
             Link("Ouvrir la page de la clé", destination: URL(string: "https://www.steamgriddb.com/profile/preferences/api")!)
             SecureField("Clé API", text: $cle).textFieldStyle(.roundedBorder)
+            if travail {
+                HStack { ProgressView().controlSize(.small); Text("Enregistrement et recherche des images des jeux déjà installés…").font(.caption) }
+            }
+            if let r = resultat {
+                Text(r).font(.caption).fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Fermer") { fermer() }
-                Button("Enregistrer") { Task { await quai.enregistrerCle(cle); fermer() } }
-                    .keyboardShortcut(.defaultAction).disabled(cle.trimmingCharacters(in: .whitespaces).count < 10)
+                Button("Enregistrer") {
+                    travail = true; resultat = nil
+                    Task { resultat = await quai.enregistrerCle(cle); travail = false; cle = "" }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(travail || cle.trimmingCharacters(in: .whitespaces).count < 10)
             }
         }
         .padding(20).frame(width: 440)
