@@ -49,7 +49,7 @@ mkdir -p "$DEST"
 # On attend que Jean le quitte lui-même, puis on installe.
 if pgrep -x Quai >/dev/null; then
     echo "   Quai est ouvert : la nouvelle version s'installera quand tu l'auras quitté."
-    while pgrep -x Quai >/dev/null; do sleep 5; done
+    while pgrep -x Quai >/dev/null; do sleep 1; done   # 1 s : Jean le rouvre vite
 fi
 rm -rf "$DEST/Quai.app"
 cp -R "$APP" "$DEST/Quai.app"

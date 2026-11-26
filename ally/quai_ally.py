@@ -745,7 +745,9 @@ def relancable(d, m):
     """Installeur automatique encore présent. Le type vient de la fiche : relire
     l'installeur (jusqu'à 64 Mo) pour chaque jeu ralentirait toute la liste."""
     i = m.get("installeur")
-    return (m.get("etat") == "installation" and bool(i) and Path(i).exists()
+    # « echec » aussi (26/11/2026) : un installeur qui quitte sans rien poser (STAR WARS,
+    # écran refusé en mode Bureau) doit pouvoir être relancé sans renvoyer 28 Go.
+    return (m.get("etat") in ("installation", "echec") and bool(i) and Path(i).exists()
             and m.get("installeur_type") in ("inno", "nsis", "msi"))
 
 def relancer(args):
