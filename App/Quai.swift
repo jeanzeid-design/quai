@@ -45,7 +45,14 @@ enum Ally {
     static let moteurDistant = ".local/share/quai/quai_ally.py"
     static let ssh = "/usr/bin/ssh"
     static let options = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=15",
-                          "-o", "LogLevel=ERROR"]
+                          "-o", "ServerAliveCountMax=2", "-o", "LogLevel=ERROR"]
+
+    /// L'Ally répond-elle ? (26/11/2026 : endormie par Steam après 15 min sur batterie,
+    /// elle coupe son Wi-Fi ; Quai affichait encore « connectée » et restait en attente.)
+    static func joignable() async -> Bool {
+        await lancer(ssh, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "-o", "LogLevel=ERROR",
+                           hote, "true"]) { _ in } == 0
+    }
 
     static func q(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
@@ -202,6 +209,20 @@ final class Quai: ObservableObject {
                                  cree: $0["cree"] as? String ?? "",
                                  enCours: $0["en_cours"] as? Bool ?? false,
                                  relancable: $0["relancable"] as? Bool ?? false) }
+        }
+    }
+
+    /// Vérifie l'Ally toutes les 20 s quand rien n'est en cours : passe en « injoignable »
+    /// dès qu'elle s'endort, et se reconnecte seule à son réveil.
+    func surveiller() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard etapeLibre else { continue }
+            if await Ally.joignable() {
+                if connecte != true { await rafraichir() }
+            } else {
+                connecte = false
+            }
         }
     }
 
@@ -426,7 +447,7 @@ struct Fenetre: View {
         }
         .background(fond)
         .frame(minWidth: 620, minHeight: 560)
-        .task { await quai.rafraichir() }
+        .task { await quai.rafraichir(); await quai.surveiller() }
         .sheet(isPresented: $reglages) { Reglages(quai: quai) }
         .alert(item: $aDesinstaller) { j in
             Alert(title: Text("Désinstaller « \(j.nom) » ?"),
@@ -441,9 +462,9 @@ struct Fenetre: View {
             Circle().fill(quai.connecte == true ? Color.green : quai.connecte == false ? Color.red : Color.gray)
                 .frame(width: 9, height: 9)
             VStack(alignment: .leading, spacing: 2) {
-                Text(quai.connecte == true ? "ROG Ally connectée" : quai.connecte == false ? "ROG Ally injoignable" : "Recherche de l'Ally…")
+                Text(quai.connecte == true ? "ROG Ally connectée" : quai.connecte == false ? "L'Ally ne répond pas" : "Recherche de l'Ally…")
                     .font(.headline)
-                Text(quai.connecte == false ? "Allume-la et vérifie qu'elle est sur le même Wi-Fi que le Mac."
+                Text(quai.connecte == false ? "Elle dort ou est éteinte : appuie sur son bouton d'alimentation. Quai la retrouvera tout seul."
                      : quai.session == "jeu" ? "En mode jeu" : quai.session == "bureau" ? "En mode Bureau" : " ")
                     .font(.caption).foregroundStyle(.secondary)
             }
