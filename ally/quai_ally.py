@@ -22,10 +22,10 @@ Règles :
 - désinstaller met d'abord de côté les sauvegardes (~/Sauvegardes/Quai) ;
 - les formats Mac/Android/paquets système sont refusés avec la raison.
 """
-import binascii, json, os, re, shutil, struct, subprocess, sys, time, urllib.parse, urllib.request
+import binascii, json, os, re, shutil, signal, struct, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-VERSION = "5"
+VERSION = "6"
 HOME = Path.home()
 STEAM = HOME / ".local/share/Steam"
 CONF = HOME / ".config/quai"
@@ -73,9 +73,30 @@ WINE_DOSSIERS = ("/internet explorer/", "/windows media player/", "/windows nt/"
 
 
 # ── sortie ───────────────────────────────────────────────────────────────────
+# Journal d'installation (26/11/2026) : chaque événement est aussi écrit dans
+# <jeu>/journal.jsonl, pour qu'un Quai rouvert ou fermé par erreur puisse
+# reprendre le suivi (commande « suivre »). Et si le Mac s'en va (Quai quitté,
+# Wi-Fi coupé), le moteur continue : on cesse seulement d'écrire vers lui.
+JOURNAL = None
+MAC_PARTI = False
+signal.signal(signal.SIGHUP, signal.SIG_IGN)
+signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
 def emit(t, **kw):
+    global MAC_PARTI
     kw["t"] = t
-    print(json.dumps(kw, ensure_ascii=False), flush=True)
+    ligne = json.dumps(kw, ensure_ascii=False)
+    if JOURNAL is not None:
+        try:
+            with open(JOURNAL, "a") as f:
+                f.write(ligne + "\n")
+        except OSError:
+            pass
+    if not MAC_PARTI:
+        try:
+            print(ligne, flush=True)
+        except (BrokenPipeError, OSError):
+            MAC_PARTI = True
 
 def etape(msg): emit("etape", msg=msg)
 
@@ -713,7 +734,44 @@ def lancer_installeur(d, meta, installeur, t, a_clics=False, bureau=None):
 # faut donc savoir si un moteur travaille encore sur ce jeu : verrou en_cours.pid
 # (PID du moteur), plus tout processus Wine resté dans le préfixe du jeu.
 def poser_verrou(d):
+    global JOURNAL
     (d / "en_cours.pid").write_text(str(os.getpid()))
+    JOURNAL = d / "journal.jsonl"
+    JOURNAL.write_text("")
+
+def suivre(args):
+    """Rejoue le journal d'une installation, puis le suit jusqu'à sa fin."""
+    d = trouver_jeu(args["id"])
+    j = d / "journal.jsonl"
+    pos, dernier, debut = 0, None, time.time()
+    while True:
+        vivant = en_cours(d)
+        if not j.exists() and vivant:
+            # Lancée par un moteur plus ancien, sans journal : on montre au moins ce qui s'écrit.
+            ecoule = int(time.time() - debut)
+            emit("progres", pct=None, msg=f"Installation en cours sur l'Ally : "
+                 f"{taille_dossier(d / 'jeu') / 1e9:.1f}".replace(".", ",") + f" Go écrits (suivi depuis {ecoule // 60} min {ecoule % 60:02d} s)")
+        if j.exists():
+            with open(j) as f:
+                f.seek(pos)
+                for ligne in f:
+                    if ligne.endswith("\n"):
+                        print(ligne, end="", flush=True)
+                        pos += len(ligne.encode())
+                        try:
+                            dernier = json.loads(ligne).get("t")
+                        except ValueError:
+                            pass
+        if not vivant:
+            break
+        time.sleep(2)
+    if dernier in ("fin", "erreur", "question"):
+        return
+    m = fiche(d)
+    if m.get("etat") == "pret":
+        emit("fin", msg="Installation terminée.")
+    else:
+        erreur("L'installation s'est arrêtée sans finir. Clique sur « Relancer » pour la reprendre.")
 
 def _vivant(pid):
     try:
@@ -1121,6 +1179,7 @@ def main():
         elif cmd == "liste": liste()
         elif cmd == "desinstaller": desinstaller(args)
         elif cmd == "relancer": relancer(args)
+        elif cmd == "suivre": suivre(args)
         elif cmd == "cle":
             CONF.mkdir(parents=True, exist_ok=True)
             (CONF / "sgdb.key").write_text(args["cle"].strip()); (CONF / "sgdb.key").chmod(0o600)

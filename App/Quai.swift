@@ -432,9 +432,23 @@ final class Quai: ObservableObject {
     // Installation inachevée : le moteur nettoie jeu/ et pfx/ et relance
     // l'installeur resté sur l'Ally, sans renvoyer le fichier (25/11/2026).
     func relancer(_ j: Jeu) async {
-        journal = []
-        guard let b = await autoriserBureau() else { return }
+        // Grisé dès le clic (26/11/2026) : la question à l'Ally laissait le temps d'un 2e clic.
+        guard etapeLibre else { return }
+        journal = []; etape = .travail; pct = nil
+        guard let b = await autoriserBureau() else { etape = .aucune; return }
         await suivre("relancer", ["id": j.id, "bureau": b])
+    }
+
+    /// Rejoint une installation qui tourne sur l'Ally (Quai rouvert, panneau fermé…).
+    func suivreJeu(_ j: Jeu) async {
+        guard etapeLibre else { return }
+        journal = []
+        await suivre("suivre", ["id": j.id])
+    }
+
+    /// À l'ouverture : si une installation tourne, on la rejoint d'office.
+    func rejoindreEnCours() async {
+        if etapeLibre, let j = jeux.first(where: { $0.enCours }) { await suivreJeu(j) }
     }
 
     func enregistrerCle(_ cle: String) async {
@@ -474,7 +488,7 @@ struct Fenetre: View {
         }
         .background(fond)
         .frame(minWidth: 620, minHeight: 560)
-        .task { await quai.rafraichir(); await quai.surveiller() }
+        .task { await quai.rafraichir(); Task { await quai.rejoindreEnCours() }; await quai.surveiller() }
         .sheet(isPresented: $reglages) { Reglages(quai: quai) }
         .alert(item: $aDesinstaller) { j in
             Alert(title: Text("Désinstaller « \(j.nom) » ?"),
@@ -636,6 +650,11 @@ struct Fenetre: View {
                             .font(.caption).foregroundStyle(j.etat == "pret" ? Color.secondary : Color.orange)
                     }
                     Spacer()
+                    if j.enCours {
+                        Button("Suivre") { Task { await quai.suivreJeu(j) } }
+                            .disabled(!quai.etapeLibre)
+                            .help("Affiche l'avancée de l'installation en cours sur l'Ally.")
+                    }
                     if j.relancable && !j.enCours {
                         Button("Relancer") { Task { await quai.relancer(j) } }
                             .disabled(!quai.etapeLibre)
