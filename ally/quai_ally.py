@@ -25,7 +25,7 @@ Règles :
 import binascii, json, os, re, shutil, signal, struct, subprocess, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
-VERSION = "7"
+VERSION = "8"
 HOME = Path.home()
 STEAM = HOME / ".local/share/Steam"
 CONF = HOME / ".config/quai"
@@ -1090,7 +1090,7 @@ def jaquettes_manquantes():
                 m = json.loads(q.read_text())
             except Exception:
                 continue
-            if m.get("etat") != "pret" or not m.get("appid") or list(grid.glob(f"{m['appid']}*")):
+            if m.get("etat") != "pret" or not m.get("appid") or list(grid.glob(f"{m['appid']}_logo.*")):
                 continue
             jaquettes(m, q.parent, m["appid"])
             ecrire_fiche(q.parent, m)
@@ -1112,20 +1112,33 @@ def jaquettes(meta, d, appid):
         gid = res[0]["id"]
         grid = dossier_utilisateur() / "config/grid"
         grid.mkdir(parents=True, exist_ok=True)
-        voulu = [("grids", "dimensions=600x900", f"{appid}p"),
-                 ("grids", "dimensions=920x430,460x215", f"{appid}"),
-                 ("heroes", "", f"{appid}_hero"),
-                 ("logos", "", f"{appid}_logo"),
-                 ("icons", "", "icone")]
-        for kind, filtre, nomf in voulu:
-            q = "&".join(x for x in (filtre, "mimes=image/png,image/jpeg") if x)
-            data = sgdb(f"/{kind}/game/{gid}?{q}", cle).get("data") or []
+        # Formats admis par type : les logos et icônes n'existent pas en JPEG, et demander
+        # image/jpeg pour eux fait répondre 400 (vu le 26/11/2026).
+        voulu = [("grids", "dimensions=600x900&mimes=image/png,image/jpeg", f"{appid}p"),
+                 ("grids", "dimensions=920x430,460x215&mimes=image/png,image/jpeg", f"{appid}"),
+                 ("heroes", "mimes=image/png,image/jpeg", f"{appid}_hero"),
+                 ("logos", "mimes=image/png", f"{appid}_logo"),
+                 ("icons", "mimes=image/png", "icone")]
+        for kind, q, nomf in voulu:
+            dossier = d if kind == "icons" else grid
+            deja = list(dossier.glob(nomf + ".*"))
+            if deja:
+                if kind == "icons":
+                    meta["icone"] = str(deja[0])
+                continue
+            try:
+                data = sgdb(f"/{kind}/game/{gid}?{q}", cle).get("data") or []
+            except urllib.error.HTTPError:
+                continue
             if not data:
                 continue
             url = data[0]["url"]
             ext = ".jpg" if url.lower().endswith((".jpg", ".jpeg")) else ".png"
             cible = (d / (nomf + ext)) if kind == "icons" else (grid / (nomf + ext))
-            urllib.request.urlretrieve(url, cible)
+            # Le CDN de SteamGridDB répond 403 à l'agent par défaut de Python (vu le 26/11/2026).
+            req = urllib.request.Request(url, headers={"User-Agent": "Quai"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                cible.write_bytes(r.read())
             if kind == "icons":
                 meta["icone"] = str(cible)
         meta["sgdb"] = {"id": gid, "nom": res[0].get("name")}
